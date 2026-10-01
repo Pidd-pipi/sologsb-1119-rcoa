@@ -21,6 +21,9 @@ import TableCell from '@mui/material/TableCell';
 import AddIcon from '@mui/icons-material/Add';
 import { useSupplyStore } from '../stores/supplyStore';
 import { useSpecimenStore } from '../stores/specimenStore';
+import { useAdhesiveStore } from '../stores/adhesiveStore';
+import { getLotAllocation, totalHeldQty } from '../utils/allocation';
+import { AdhesiveQueueDialog } from '../components/common/AdhesiveQueueDialog';
 import { MeasureField } from '../components/common/MeasureField';
 import { SUPPLY_KINDS, isLowStock, shelfLifeLeftDays, type SupplyKind, type SupplyLot, type SupplyLotDraft } from '../types/supply';
 
@@ -42,12 +45,14 @@ export default function SupplyList() {
   const addLot = useSupplyStore((s) => s.add);
   const issue = useSupplyStore((s) => s.issue);
   const specimens = useSpecimenStore((s) => s.items);
+  const adhesiveRequests = useAdhesiveStore((s) => s.items);
 
   const [trace, setTrace] = useState('');
   const [kindFilter, setKindFilter] = useState<SupplyKind | 'all'>('all');
   const [createOpen, setCreateOpen] = useState(false);
   const [draft, setDraft] = useState<SupplyLotDraft>(EMPTY_DRAFT);
   const [issueTarget, setIssueTarget] = useState<SupplyLot | null>(null);
+  const [queueLot, setQueueLot] = useState<SupplyLot | null>(null);
   const [issueQty, setIssueQty] = useState(1);
   const [issueOperator, setIssueOperator] = useState('');
   const [issueSpecimen, setIssueSpecimen] = useState('');
@@ -103,7 +108,12 @@ export default function SupplyList() {
     setToast('领用已登记');
   };
 
-  const lowCount = lots.filter(isLowStock).length;
+  const lowCount = lots.filter((lot) => {
+    if (!isLowStock(lot)) return false;
+    if (lot.kind === '胶种') return getLotAllocation(lot, adhesiveRequests).available <= lot.lowThreshold;
+    return true;
+  }).length;
+  const heldTotal = totalHeldQty(lots, adhesiveRequests);
 
   return (
     <Stack spacing={2}>
@@ -113,6 +123,12 @@ export default function SupplyList() {
         </Typography>
         <Chip size="small" label={`共 ${lots.length} 个批次`} />
         <Chip size="small" color={lowCount > 0 ? 'warning' : 'default'} label={`低量 ${lowCount} 项`} />
+        <Chip
+          size="small"
+          color={heldTotal > 0 ? 'warning' : 'default'}
+          variant={heldTotal > 0 ? 'filled' : 'outlined'}
+          label={`胶种待确认占用 ${heldTotal}`}
+        />
         <Box sx={{ flex: 1 }} />
         <Button variant="contained" startIcon={<AddIcon />} onClick={() => setCreateOpen(true)}>
           登记批次
@@ -148,6 +164,10 @@ export default function SupplyList() {
         </Stack>
       </Paper>
 
+      <Alert severity="info" variant="outlined">
+        胶种为受控材料：技师不能直接领用，须在工序节点按批号提交用量申请，先形成「待确认占用」，由有复核权限的人确认后才扣减在库；同批次容量不足时按提交顺序排队。
+      </Alert>
+
       {grouped.map((group) => (
         <Paper key={group.kind} variant="outlined" sx={{ p: 2 }}>
           <Stack direction="row" alignItems="center" spacing={1} sx={{ mb: 1 }}>
@@ -168,6 +188,9 @@ export default function SupplyList() {
                   <TableCell>规格</TableCell>
                   <TableCell>批号</TableCell>
                   <TableCell align="right">在库</TableCell>
+                  <TableCell align="right">待确认占用</TableCell>
+                  <TableCell align="right">可用量</TableCell>
+                  <TableCell align="right">等待名次</TableCell>
                   <TableCell align="right">低量阈值</TableCell>
                   <TableCell align="right">剩余保质期</TableCell>
                   <TableCell>最近领用</TableCell>
@@ -176,7 +199,10 @@ export default function SupplyList() {
               </TableHead>
               <TableBody>
                 {group.rows.map((lot) => {
-                  const low = isLowStock(lot);
+                  const alloc = getLotAllocation(lot, adhesiveRequests);
+                  const controlled = lot.kind === '胶种';
+                  const lowBase = isLowStock(lot);
+                  const low = controlled ? alloc.available <= lot.lowThreshold : lowBase;
                   const left = shelfLifeLeftDays(lot);
                   return (
                     <TableRow
@@ -187,12 +213,38 @@ export default function SupplyList() {
                     >
                       <TableCell>
                         {lot.name}
+                        {controlled ? <Chip size="small" color="secondary" variant="outlined" label="受控" sx={{ ml: 1 }} /> : null}
                         {low ? <Chip size="small" color="warning" label="低量" sx={{ ml: 1 }} /> : null}
                       </TableCell>
                       <TableCell>{lot.spec}</TableCell>
                       <TableCell>{lot.lotNo}</TableCell>
                       <TableCell align="right">
                         {lot.qty} {lot.unit}
+                      </TableCell>
+                      <TableCell align="right" data-testid={`held-${lot.id}`}>
+                        {controlled ? (
+                          <Box sx={{ color: alloc.heldQty > 0 ? 'warning.dark' : undefined, fontWeight: alloc.heldQty > 0 ? 700 : 400 }}>
+                            {alloc.heldQty} {lot.unit}
+                          </Box>
+                        ) : (
+                          '—'
+                        )}
+                      </TableCell>
+                      <TableCell align="right" data-testid={`available-${lot.id}`}>
+                        {controlled ? (
+                          <Box fontWeight={700}>
+                            {alloc.available} {lot.unit}
+                          </Box>
+                        ) : (
+                          `${lot.qty} ${lot.unit}`
+                        )}
+                      </TableCell>
+                      <TableCell align="right" data-testid={`waiting-${lot.id}`}>
+                        {controlled && alloc.waitingCount > 0
+                          ? `${alloc.waitingCount} 笔 · ${alloc.waitingQty} ${lot.unit}`
+                          : controlled
+                            ? '无等待'
+                            : '—'}
                       </TableCell>
                       <TableCell align="right">{lot.lowThreshold}</TableCell>
                       <TableCell align="right">
@@ -204,17 +256,32 @@ export default function SupplyList() {
                           : `${lot.issues[0].operator} 领 ${lot.issues[0].qty} ${lot.unit}（${lot.issues[0].specimenNo}）`}
                       </TableCell>
                       <TableCell align="right">
-                        <Button
-                          size="small"
-                          disabled={lot.qty <= 0}
-                          onClick={() => {
-                            setIssueTarget(lot);
-                            setIssueQty(1);
-                            setError('');
-                          }}
-                        >
-                          领用
-                        </Button>
+                        {controlled ? (
+                          <Button
+                            size="small"
+                            variant="outlined"
+                            color="secondary"
+                            data-testid={`queue-btn-${lot.id}`}
+                            onClick={() => setQueueLot(lot)}
+                          >
+                            占用队列
+                            {alloc.waitingCount + alloc.heldQty > 0
+                              ? `（${alloc.heldQty} 占 / ${alloc.waitingCount} 等）`
+                              : ''}
+                          </Button>
+                        ) : (
+                          <Button
+                            size="small"
+                            disabled={lot.qty <= 0}
+                            onClick={() => {
+                              setIssueTarget(lot);
+                              setIssueQty(1);
+                              setError('');
+                            }}
+                          >
+                            领用
+                          </Button>
+                        )}
                       </TableCell>
                     </TableRow>
                   );
@@ -385,6 +452,8 @@ export default function SupplyList() {
           </Button>
         </DialogActions>
       </Dialog>
+
+      <AdhesiveQueueDialog key={queueLot?.id ?? 'none'} lot={queueLot} onClose={() => setQueueLot(null)} />
 
       <Snackbar open={!!toast} autoHideDuration={2400} onClose={() => setToast('')} message={toast} />
     </Stack>

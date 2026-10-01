@@ -16,6 +16,7 @@ import { useSpecimenStore } from '../stores/specimenStore';
 import { useProcedureStore } from '../stores/procedureStore';
 import { usePrepProgress } from '../hooks/usePrepProgress';
 import { ProcedureTimeline } from '../components/common/ProcedureTimeline';
+import { AdhesiveRequestPanel } from '../components/common/AdhesiveRequestPanel';
 import { MeasureField } from '../components/common/MeasureField';
 import { STEP_FIELD_MAP, STEP_TYPES, type StepType } from '../types/procedure';
 import { db } from '../utils/db';
@@ -30,6 +31,7 @@ export default function ProcedureForm() {
   const addProcedure = useProcedureStore((s) => s.add);
   const finish = useProcedureStore((s) => s.finish);
   const rollback = useProcedureStore((s) => s.rollback);
+  const removeProcedure = useProcedureStore((s) => s.remove);
 
   const [specimenId, setSpecimenId] = useState(params.get('specimenId') ?? specimens[0]?.id ?? '');
   const [stepType, setStepType] = useState<StepType>('清修');
@@ -339,8 +341,21 @@ export default function ProcedureForm() {
             }}
             onRollback={async (pid) => {
               await rollback(pid);
-              setToast('节点已回退');
+              setToast('节点已回退：未确认的胶种占用已释放并按队列补位');
             }}
+            onRemove={async (pid) => {
+              await removeProcedure(pid);
+              setToast('节点已移除：未确认的胶种占用已释放并按队列补位');
+            }}
+            renderAdhesive={(node) =>
+              specimen ? (
+                <AdhesiveRequestPanel
+                  procedureId={node.id}
+                  specimenId={specimen.id}
+                  specimenNo={specimen.specimenNo}
+                />
+              ) : null
+            }
           />
         </Paper>
       </Box>

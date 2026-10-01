@@ -10,9 +10,15 @@ import Box from '@mui/material/Box';
 import Stack from '@mui/material/Stack';
 import CircularProgress from '@mui/material/CircularProgress';
 import Chip from '@mui/material/Chip';
+import TextField from '@mui/material/TextField';
+import MenuItem from '@mui/material/MenuItem';
+import LockIcon from '@mui/icons-material/Lock';
 import { useSpecimenStore } from '../stores/specimenStore';
 import { useProcedureStore } from '../stores/procedureStore';
 import { useSupplyStore } from '../stores/supplyStore';
+import { useAdhesiveStore } from '../stores/adhesiveStore';
+import { useAuthStore } from '../stores/authStore';
+import { WORK_USERS, WORK_ROLE_LABEL } from '../types/auth';
 import { ensureSeedData, markDbVersion, readDbVersion } from '../utils/db';
 import SpecimenList from '../pages/SpecimenList';
 import SpecimenDetail from '../pages/SpecimenDetail';
@@ -24,6 +30,8 @@ function Shell() {
   const location = useLocation();
   const navigate = useNavigate();
   const specimens = useSpecimenStore((s) => s.items);
+  const currentUser = useAuthStore((s) => s.current);
+  const switchUser = useAuthStore((s) => s.switchUser);
   const version = readDbVersion();
 
   const navItems = useMemo(() => {
@@ -56,6 +64,28 @@ function Shell() {
             ))}
           </Tabs>
           <Box sx={{ flex: 1 }} />
+          <Chip
+            size="small"
+            icon={<LockIcon />}
+            color={currentUser.role === 'reviewer' ? 'success' : 'default'}
+            label={currentUser.role === 'reviewer' ? '可复核胶种领用' : '技师：仅可提交申请'}
+            sx={{ mr: 1 }}
+          />
+          <TextField
+            select
+            size="small"
+            variant="outlined"
+            value={currentUser.name}
+            onChange={(e) => switchUser(e.target.value)}
+            sx={{ minWidth: 170, mr: 1 }}
+            label="当前身份"
+          >
+            {WORK_USERS.map((u) => (
+              <MenuItem key={u.name} value={u.name}>
+                {u.name} · {WORK_ROLE_LABEL[u.role]}
+              </MenuItem>
+            ))}
+          </TextField>
           <Chip size="small" variant="outlined" label={`本地结构版本 v${version}`} />
         </Toolbar>
       </AppBar>
@@ -80,19 +110,20 @@ export default function AppRouter() {
   const loadSpecimens = useSpecimenStore((s) => s.load);
   const loadProcedures = useProcedureStore((s) => s.load);
   const loadSupplies = useSupplyStore((s) => s.load);
+  const loadAdhesives = useAdhesiveStore((s) => s.load);
 
   useEffect(() => {
     let alive = true;
     (async () => {
       await ensureSeedData();
       await markDbVersion();
-      await Promise.all([loadSpecimens(), loadProcedures(), loadSupplies()]);
+      await Promise.all([loadSpecimens(), loadProcedures(), loadSupplies(), loadAdhesives()]);
       if (alive) setReady(true);
     })();
     return () => {
       alive = false;
     };
-  }, [loadSpecimens, loadProcedures, loadSupplies]);
+  }, [loadSpecimens, loadProcedures, loadSupplies, loadAdhesives]);
 
   if (!ready) {
     return (

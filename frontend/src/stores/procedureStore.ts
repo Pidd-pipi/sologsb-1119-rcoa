@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { db } from '../utils/db';
 import { newId } from '../utils/id';
+import { useAdhesiveStore } from './adhesiveStore';
 import type { PrepProcedure, PrepProcedureDraft } from '../types/procedure';
 
 interface ProcedureState {
@@ -37,10 +38,14 @@ export const useProcedureStore = create<ProcedureState>((set, get) => ({
     const patch: Partial<PrepProcedure> = { state: 'rolledback', finishedAt: undefined };
     await db.procedures.update(id, patch);
     set({ items: get().items.map((it) => (it.id === id ? { ...it, ...patch } : it)) });
+    // 受控胶种：工序回退时释放该节点的待确认占用并触发排队补位
+    await useAdhesiveStore.getState().releaseByProcedure(id, 'procedure_rollback');
   },
   async remove(id) {
     await db.procedures.delete(id);
     set({ items: get().items.filter((it) => it.id !== id) });
+    // 受控胶种：工序移除时同样释放占用
+    await useAdhesiveStore.getState().releaseByProcedure(id, 'procedure_remove');
   },
   bySpecimen(specimenId) {
     return get()

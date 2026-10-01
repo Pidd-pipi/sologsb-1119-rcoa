@@ -18,6 +18,7 @@ import { useProcedureStore } from '../stores/procedureStore';
 import { usePrepProgress } from '../hooks/usePrepProgress';
 import { SpecimenCard } from '../components/common/SpecimenCard';
 import { ProcedureTimeline } from '../components/common/ProcedureTimeline';
+import { AdhesiveRequestPanel } from '../components/common/AdhesiveRequestPanel';
 import { db } from '../utils/db';
 import { PHOTO_STAGE_LABEL, type PrepPhoto } from '../types/photo';
 import { SPECIMEN_STATUSES, type SpecimenStatus } from '../types/specimen';
@@ -30,6 +31,7 @@ export default function SpecimenDetail() {
   const setStatus = useSpecimenStore((s) => s.setStatus);
   const finish = useProcedureStore((s) => s.finish);
   const rollback = useProcedureStore((s) => s.rollback);
+  const removeProcedure = useProcedureStore((s) => s.remove);
   const progress = usePrepProgress(id);
   const [photos, setPhotos] = useState<PrepPhoto[]>([]);
   const [toast, setToast] = useState('');
@@ -140,8 +142,19 @@ export default function SpecimenDetail() {
               }}
               onRollback={async (pid) => {
                 await rollback(pid);
-                setToast('节点已回退');
+                setToast('节点已回退：未确认的胶种占用已释放并按队列补位');
               }}
+              onRemove={async (pid) => {
+                await removeProcedure(pid);
+                setToast('节点已移除：未确认的胶种占用已释放并按队列补位');
+              }}
+              renderAdhesive={(node) => (
+                <AdhesiveRequestPanel
+                  procedureId={node.id}
+                  specimenId={specimen.id}
+                  specimenNo={specimen.specimenNo}
+                />
+              )}
             />
           </Paper>
 

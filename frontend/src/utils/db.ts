@@ -2,12 +2,13 @@ import Dexie, { type Table } from 'dexie';
 import type { Specimen } from '../types/specimen';
 import type { PrepProcedure } from '../types/procedure';
 import type { SupplyLot } from '../types/supply';
+import type { AdhesiveRequest } from '../types/adhesive';
 import type { PrepPhoto } from '../types/photo';
 import { makeSketchDataUrl } from '../types/photo';
 import { newId } from './id';
 
 /** 当前数据结构版本，写入 localStorage 便于回显 */
-export const DB_VERSION = 2;
+export const DB_VERSION = 3;
 export const DB_NAME = 'gbfossilprep';
 export const LS_VERSION_KEY = 'gbfossilprep:db-version';
 
@@ -15,6 +16,7 @@ class FossilPrepDB extends Dexie {
   specimens!: Table<Specimen, string>;
   procedures!: Table<PrepProcedure, string>;
   supplies!: Table<SupplyLot, string>;
+  adhesives!: Table<AdhesiveRequest, string>;
   photos!: Table<PrepPhoto, string>;
 
   constructor() {
@@ -54,6 +56,14 @@ class FossilPrepDB extends Dexie {
             if (row.lowThreshold === undefined) row.lowThreshold = 1;
           });
       });
+    // v3：新增受控胶种用量申请表（held 占用 / waiting 排队 / confirmed / released）
+    this.version(3).stores({
+      specimens: 'id, specimenNo, taxon, locality, status, createdAt',
+      procedures: 'id, specimenId, seq, stepType, state, startedAt',
+      supplies: 'id, kind, lotNo, name, openedAt',
+      adhesives: 'id, supplyLotId, procedureId, specimenId, status, submittedAt',
+      photos: 'id, specimenId, procedureId, stage, capturedAt',
+    });
   }
 }
 
@@ -86,6 +96,10 @@ export async function ensureSeedData(): Promise<void> {
   const day = 24 * 3600 * 1000;
   const specimenId = newId('spm');
   const specimenId2 = newId('spm');
+  const procedureDoneId = newId('prc');
+  const procedureHoldId = newId('prc');
+  const procedureWaitId = newId('prc');
+  const adhesiveLotId = newId('sup');
 
   const specimens: Specimen[] = [
     {
@@ -120,7 +134,7 @@ export async function ensureSeedData(): Promise<void> {
 
   const procedures: PrepProcedure[] = [
     {
-      id: newId('prc'),
+      id: procedureDoneId,
       specimenId,
       stepType: '清修',
       nodeName: '左侧肩胛区粗清',
@@ -140,7 +154,7 @@ export async function ensureSeedData(): Promise<void> {
       finishedAt: now - 10 * day + 145 * 60000,
     },
     {
-      id: newId('prc'),
+      id: procedureHoldId,
       specimenId,
       stepType: '加固',
       nodeName: '围岩裂隙渗透加固',
@@ -158,13 +172,32 @@ export async function ensureSeedData(): Promise<void> {
       startedAt: now - 6 * day,
       state: 'pending',
     },
+    {
+      id: procedureWaitId,
+      specimenId: specimenId2,
+      stepType: '粘接',
+      nodeName: '下颌联合处粘接',
+      seq: 1,
+      tools: ['点胶针', '夹持架'],
+      abrasive: '',
+      adhesive: 'Paraloid B-72',
+      adhesiveConc: 10,
+      durationMin: 75,
+      tempC: 21,
+      rh: 52,
+      photoBeforeIds: [],
+      photoAfterIds: [],
+      operator: '沈归白',
+      startedAt: now - 2 * day,
+      state: 'pending',
+    },
   ];
 
   const photos: PrepPhoto[] = [
     {
       id: newId('pho'),
       specimenId,
-      procedureId: procedures[0].id,
+      procedureId: procedureDoneId,
       stage: 'before',
       caption: '清修前 · 左侧肩胛区围岩包裹',
       dataUrl: makeSketchDataUrl('清修前 · FP-2024-0031', '#6b5844'),
@@ -173,7 +206,7 @@ export async function ensureSeedData(): Promise<void> {
     {
       id: newId('pho'),
       specimenId,
-      procedureId: procedures[0].id,
+      procedureId: procedureDoneId,
       stage: 'after',
       caption: '清修后 · 肩胛骨轮廓显露',
       dataUrl: makeSketchDataUrl('清修后 · FP-2024-0031', '#3f5a4a'),
@@ -185,12 +218,12 @@ export async function ensureSeedData(): Promise<void> {
 
   const supplies: SupplyLot[] = [
     {
-      id: newId('sup'),
+      id: adhesiveLotId,
       name: 'Paraloid B-72',
       kind: '胶种',
       spec: '分析纯 500 g',
       lotNo: 'B72-20240312',
-      qty: 4,
+      qty: 3,
       unit: '瓶',
       openedAt: now - 40 * day,
       shelfLifeMonths: 36,
@@ -199,7 +232,7 @@ export async function ensureSeedData(): Promise<void> {
         {
           id: newId('iss'),
           qty: 1,
-          operator: '林砚秋',
+          operator: '周明允',
           specimenNo: 'FP-2024-0031',
           issuedAt: now - 6 * day,
         },
@@ -246,10 +279,56 @@ export async function ensureSeedData(): Promise<void> {
     },
   ];
 
-  await db.transaction('rw', db.specimens, db.procedures, db.supplies, db.photos, async () => {
-    await db.specimens.bulkPut(specimens);
-    await db.procedures.bulkPut(procedures);
-    await db.supplies.bulkPut(supplies);
-    await db.photos.bulkPut(photos);
-  });
+  // 受控胶种示范：批号 B72-20240312 在库 3 瓶。
+  // 林砚秋（#2 围岩裂隙渗透加固）先提交 2 瓶 → held；沈归白后提交 2 瓶装不下 → waiting 第 1。
+  const adhesiveRequests: AdhesiveRequest[] = [
+    {
+      id: newId('adh'),
+      supplyLotId: adhesiveLotId,
+      supplyLotName: 'Paraloid B-72',
+      supplyLotSpec: '分析纯 500 g',
+      lotNo: 'B72-20240312',
+      unit: '瓶',
+      procedureId: procedureHoldId,
+      specimenId,
+      specimenNo: 'FP-2024-0031',
+      qty: 2,
+      status: 'held',
+      applicant: '林砚秋',
+      submittedAt: now - 2 * day - 3600 * 1000,
+      updatedAt: now - 2 * day - 3600 * 1000,
+    },
+    {
+      id: newId('adh'),
+      supplyLotId: adhesiveLotId,
+      supplyLotName: 'Paraloid B-72',
+      supplyLotSpec: '分析纯 500 g',
+      lotNo: 'B72-20240312',
+      unit: '瓶',
+      procedureId: procedureWaitId,
+      specimenId: specimenId2,
+      specimenNo: 'FP-2024-0058',
+      qty: 2,
+      status: 'waiting',
+      applicant: '沈归白',
+      submittedAt: now - 2 * day + 2 * 3600 * 1000,
+      updatedAt: now - 2 * day + 2 * 3600 * 1000,
+    },
+  ];
+
+  await db.transaction(
+    'rw',
+    db.specimens,
+    db.procedures,
+    db.supplies,
+    db.adhesives,
+    db.photos,
+    async () => {
+      await db.specimens.bulkPut(specimens);
+      await db.procedures.bulkPut(procedures);
+      await db.supplies.bulkPut(supplies);
+      await db.adhesives.bulkPut(adhesiveRequests);
+      await db.photos.bulkPut(photos);
+    },
+  );
 }

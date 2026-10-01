@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react';
 import { useState } from 'react';
 import Box from '@mui/material/Box';
 import Stack from '@mui/material/Stack';
@@ -19,7 +20,10 @@ export interface ProcedureTimelineProps {
   items: PrepProcedure[];
   onFinish?: (id: string) => void;
   onRollback?: (id: string) => void;
+  onRemove?: (id: string) => void;
   onOpenPhoto?: (procedureId: string) => void;
+  /** 受控胶种用量申请面板，按节点渲染 */
+  renderAdhesive?: (node: PrepProcedure) => ReactNode;
 }
 
 function fmtTime(ts?: number): string {
@@ -33,7 +37,7 @@ function fmtTime(ts?: number): string {
  * 纵向工序节点流：步骤图标、状态、耗时、环境参数折叠区。
  * 被标本详情页、工序录入页消费。
  */
-export function ProcedureTimeline({ items, onFinish, onRollback, onOpenPhoto }: ProcedureTimelineProps) {
+export function ProcedureTimeline({ items, onFinish, onRollback, onRemove, onOpenPhoto, renderAdhesive }: ProcedureTimelineProps) {
   const [expanded, setExpanded] = useState<string | null>(items[0]?.id ?? null);
 
   if (items.length === 0) {
@@ -83,9 +87,27 @@ export function ProcedureTimeline({ items, onFinish, onRollback, onOpenPhoto }: 
                     完成节点
                   </Button>
                 ) : null}
+                {!isDone && onRollback && node.state === 'pending' ? (
+                  <Button size="small" color="warning" startIcon={<UndoIcon />} onClick={() => onRollback(node.id)}>
+                    回退节点
+                  </Button>
+                ) : null}
                 {isDone && onRollback ? (
                   <Button size="small" color="warning" startIcon={<UndoIcon />} onClick={() => onRollback(node.id)}>
                     回退节点
+                  </Button>
+                ) : null}
+                {onRemove ? (
+                  <Button
+                    size="small"
+                    color="error"
+                    onClick={() => {
+                      if (window.confirm(`确认移除节点 #${node.seq} ${node.nodeName}？该节点未确认的胶种占用将一并释放。`)) {
+                        onRemove(node.id);
+                      }
+                    }}
+                  >
+                    移除
                   </Button>
                 ) : null}
                 <Tooltip title={open ? '收起环境参数' : '展开环境参数'}>
@@ -120,6 +142,9 @@ export function ProcedureTimeline({ items, onFinish, onRollback, onOpenPhoto }: 
                     </Button>
                   ) : null}
                 </Stack>
+                {renderAdhesive ? (
+                  <Box sx={{ mt: 1.5 }}>{renderAdhesive(node)}</Box>
+                ) : null}
               </Collapse>
             </Paper>
           </Box>
