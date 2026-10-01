@@ -1,13 +1,13 @@
 import Dexie, { type Table } from 'dexie';
 import type { Specimen } from '../types/specimen';
 import type { PrepProcedure } from '../types/procedure';
-import type { SupplyLot } from '../types/supply';
+import type { SupplyLot, SupplyRequest } from '../types/supply';
 import type { PrepPhoto } from '../types/photo';
 import { makeSketchDataUrl } from '../types/photo';
 import { newId } from './id';
 
 /** 当前数据结构版本，写入 localStorage 便于回显 */
-export const DB_VERSION = 2;
+export const DB_VERSION = 3;
 export const DB_NAME = 'gbfossilprep';
 export const LS_VERSION_KEY = 'gbfossilprep:db-version';
 
@@ -15,6 +15,7 @@ class FossilPrepDB extends Dexie {
   specimens!: Table<Specimen, string>;
   procedures!: Table<PrepProcedure, string>;
   supplies!: Table<SupplyLot, string>;
+  requests!: Table<SupplyRequest, string>;
   photos!: Table<PrepPhoto, string>;
 
   constructor() {
@@ -54,6 +55,14 @@ class FossilPrepDB extends Dexie {
             if (row.lowThreshold === undefined) row.lowThreshold = 1;
           });
       });
+    // v3：受控胶种用量申请表（待确认占用 / 排队 / 已确认 / 已拒绝 / 已释放）
+    this.version(3).stores({
+      specimens: 'id, specimenNo, taxon, locality, status, createdAt',
+      procedures: 'id, specimenId, seq, stepType, state, startedAt',
+      supplies: 'id, kind, lotNo, name, openedAt',
+      requests: 'id, lotId, procedureId, status, submittedAt',
+      photos: 'id, specimenId, procedureId, stage, capturedAt',
+    });
   }
 }
 
@@ -246,10 +255,38 @@ export async function ensureSeedData(): Promise<void> {
     },
   ];
 
-  await db.transaction('rw', db.specimens, db.procedures, db.supplies, db.photos, async () => {
+  const requests: SupplyRequest[] = [
+    {
+      id: newId('srq'),
+      lotId: supplies[0].id,
+      procedureId: procedures[1].id,
+      specimenId,
+      specimenNo: 'FP-2024-0031',
+      qty: 3,
+      unit: '瓶',
+      status: 'pending',
+      requestedBy: '林砚秋',
+      submittedAt: now - 2 * day,
+    },
+    {
+      id: newId('srq'),
+      lotId: supplies[0].id,
+      procedureId: procedures[1].id,
+      specimenId,
+      specimenNo: 'FP-2024-0031',
+      qty: 2,
+      unit: '瓶',
+      status: 'pending',
+      requestedBy: '林砚秋',
+      submittedAt: now - 1 * day,
+    },
+  ];
+
+  await db.transaction('rw', db.specimens, db.procedures, db.supplies, db.requests, db.photos, async () => {
     await db.specimens.bulkPut(specimens);
     await db.procedures.bulkPut(procedures);
     await db.supplies.bulkPut(supplies);
+    await db.requests.bulkPut(requests);
     await db.photos.bulkPut(photos);
   });
 }

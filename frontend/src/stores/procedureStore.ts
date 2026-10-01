@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import { db } from '../utils/db';
 import { newId } from '../utils/id';
 import type { PrepProcedure, PrepProcedureDraft } from '../types/procedure';
+import { useSupplyStore } from './supplyStore';
 
 interface ProcedureState {
   items: PrepProcedure[];
@@ -37,10 +38,14 @@ export const useProcedureStore = create<ProcedureState>((set, get) => ({
     const patch: Partial<PrepProcedure> = { state: 'rolledback', finishedAt: undefined };
     await db.procedures.update(id, patch);
     set({ items: get().items.map((it) => (it.id === id ? { ...it, ...patch } : it)) });
+    // 工序回退：释放该工序下受控胶种的待确认占用（库存不扣减）
+    await useSupplyStore.getState().releaseByProcedure(id);
   },
   async remove(id) {
     await db.procedures.delete(id);
     set({ items: get().items.filter((it) => it.id !== id) });
+    // 工序移除：同步释放待确认占用
+    await useSupplyStore.getState().releaseByProcedure(id);
   },
   bySpecimen(specimenId) {
     return get()

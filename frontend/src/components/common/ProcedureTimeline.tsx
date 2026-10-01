@@ -14,6 +14,7 @@ import RadioButtonUncheckedIcon from '@mui/icons-material/RadioButtonUnchecked';
 import UndoIcon from '@mui/icons-material/Undo';
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import type { PrepProcedure } from '../../types/procedure';
+import { SupplyRequestPanel } from './SupplyRequestPanel';
 
 export interface ProcedureTimelineProps {
   items: PrepProcedure[];
@@ -120,6 +121,7 @@ export function ProcedureTimeline({ items, onFinish, onRollback, onOpenPhoto }: 
                     </Button>
                   ) : null}
                 </Stack>
+                <SupplyRequestPanel procedureId={node.id} />
               </Collapse>
             </Paper>
           </Box>

@@ -21,8 +21,17 @@ import TableCell from '@mui/material/TableCell';
 import AddIcon from '@mui/icons-material/Add';
 import { useSupplyStore } from '../stores/supplyStore';
 import { useSpecimenStore } from '../stores/specimenStore';
+import { useRoleStore } from '../stores/roleStore';
 import { MeasureField } from '../components/common/MeasureField';
-import { SUPPLY_KINDS, isLowStock, shelfLifeLeftDays, type SupplyKind, type SupplyLot, type SupplyLotDraft } from '../types/supply';
+import {
+  SUPPLY_KINDS,
+  isLowStock,
+  shelfLifeLeftDays,
+  type SupplyKind,
+  type SupplyLot,
+  type SupplyLotDraft,
+} from '../types/supply';
+import { deriveLotAvailability, totalActiveRequests } from '../utils/supplyRequests';
 
 const EMPTY_DRAFT: SupplyLotDraft = {
   name: '',
@@ -39,9 +48,13 @@ const EMPTY_DRAFT: SupplyLotDraft = {
 /** /supplies 工具材料台账：按种类分组、批号追溯、低量行高亮 */
 export default function SupplyList() {
   const lots = useSupplyStore((s) => s.items);
+  const requests = useSupplyStore((s) => s.requests);
   const addLot = useSupplyStore((s) => s.add);
   const issue = useSupplyStore((s) => s.issue);
+  const confirmRequest = useSupplyStore((s) => s.confirmRequest);
+  const rejectRequest = useSupplyStore((s) => s.rejectRequest);
   const specimens = useSpecimenStore((s) => s.items);
+  const role = useRoleStore((s) => s.role);
 
   const [trace, setTrace] = useState('');
   const [kindFilter, setKindFilter] = useState<SupplyKind | 'all'>('all');
@@ -51,6 +64,7 @@ export default function SupplyList() {
   const [issueQty, setIssueQty] = useState(1);
   const [issueOperator, setIssueOperator] = useState('');
   const [issueSpecimen, setIssueSpecimen] = useState('');
+  const [reviewTarget, setReviewTarget] = useState<SupplyLot | null>(null);
   const [error, setError] = useState('');
   const [toast, setToast] = useState('');
 
@@ -103,7 +117,26 @@ export default function SupplyList() {
     setToast('领用已登记');
   };
 
+  const reviewAvail = reviewTarget ? deriveLotAvailability(reviewTarget, requests) : undefined;
+
+  const doConfirm = async (id: string) => {
+    setError('');
+    try {
+      await confirmRequest(id, role);
+      setToast('已确认申请，库存转为正式领用');
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  };
+
+  const doReject = async (id: string) => {
+    setError('');
+    await rejectRequest(id, '复核拒绝');
+    setToast('已拒绝该申请');
+  };
+
   const lowCount = lots.filter(isLowStock).length;
+  const pendingTotal = totalActiveRequests(requests);
 
   return (
     <Stack spacing={2}>
@@ -113,6 +146,11 @@ export default function SupplyList() {
         </Typography>
         <Chip size="small" label={`共 ${lots.length} 个批次`} />
         <Chip size="small" color={lowCount > 0 ? 'warning' : 'default'} label={`低量 ${lowCount} 项`} />
+        <Chip
+          size="small"
+          color={pendingTotal > 0 ? 'info' : 'default'}
+          label={`待确认占用 ${pendingTotal} 项`}
+        />
         <Box sx={{ flex: 1 }} />
         <Button variant="contained" startIcon={<AddIcon />} onClick={() => setCreateOpen(true)}>
           登记批次
@@ -168,6 +206,8 @@ export default function SupplyList() {
                   <TableCell>规格</TableCell>
                   <TableCell>批号</TableCell>
                   <TableCell align="right">在库</TableCell>
+                  <TableCell align="right">待确认量</TableCell>
+                  <TableCell align="right">可用量</TableCell>
                   <TableCell align="right">低量阈值</TableCell>
                   <TableCell align="right">剩余保质期</TableCell>
                   <TableCell>最近领用</TableCell>
@@ -178,6 +218,8 @@ export default function SupplyList() {
                 {group.rows.map((lot) => {
                   const low = isLowStock(lot);
                   const left = shelfLifeLeftDays(lot);
+                  const avail = deriveLotAvailability(lot, requests);
+                  const controlled = lot.kind === '胶种';
                   return (
                     <TableRow
                       key={lot.id}
@@ -194,6 +236,26 @@ export default function SupplyList() {
                       <TableCell align="right">
                         {lot.qty} {lot.unit}
                       </TableCell>
+                      <TableCell align="right">
+                        {avail.heldQty > 0 ? (
+                          <Chip size="small" color="info" variant="outlined" label={`${avail.heldQty} ${lot.unit}`} />
+                        ) : (
+                          '—'
+                        )}
+                      </TableCell>
+                      <TableCell align="right">
+                        {controlled ? (
+                          <Typography
+                            component="span"
+                            color={avail.availableQty <= lot.lowThreshold ? 'warning.main' : 'text.primary'}
+                            fontWeight={600}
+                          >
+                            {avail.availableQty} {lot.unit}
+                          </Typography>
+                        ) : (
+                          `${lot.qty} ${lot.unit}`
+                        )}
+                      </TableCell>
                       <TableCell align="right">{lot.lowThreshold}</TableCell>
                       <TableCell align="right">
                         {left < 0 ? <Chip size="small" color="error" label={`已过期 ${-left} 天`} /> : `${left} 天`}
@@ -204,17 +266,30 @@ export default function SupplyList() {
                           : `${lot.issues[0].operator} 领 ${lot.issues[0].qty} ${lot.unit}（${lot.issues[0].specimenNo}）`}
                       </TableCell>
                       <TableCell align="right">
-                        <Button
-                          size="small"
-                          disabled={lot.qty <= 0}
-                          onClick={() => {
-                            setIssueTarget(lot);
-                            setIssueQty(1);
-                            setError('');
-                          }}
-                        >
-                          领用
-                        </Button>
+                        {controlled ? (
+                          <Button
+                            size="small"
+                            color="info"
+                            onClick={() => {
+                              setReviewTarget(lot);
+                              setError('');
+                            }}
+                          >
+                            复核{avail.activeCount > 0 ? `（${avail.activeCount}）` : ''}
+                          </Button>
+                        ) : (
+                          <Button
+                            size="small"
+                            disabled={lot.qty <= 0}
+                            onClick={() => {
+                              setIssueTarget(lot);
+                              setIssueQty(1);
+                              setError('');
+                            }}
+                          >
+                            领用
+                          </Button>
+                        )}
                       </TableCell>
                     </TableRow>
                   );
@@ -383,6 +458,91 @@ export default function SupplyList() {
           <Button variant="contained" onClick={submitIssue}>
             确认领用
           </Button>
+        </DialogActions>
+      </Dialog>
+
+      <Dialog open={!!reviewTarget} onClose={() => setReviewTarget(null)} fullWidth maxWidth="md">
+        <DialogTitle>
+          受控胶种用量复核{reviewTarget ? ` · ${reviewTarget.name}` : ''}
+        </DialogTitle>
+        <DialogContent dividers>
+          <Stack spacing={1.5} sx={{ mt: 0.5 }}>
+            {error ? <Alert severity="error">{error}</Alert> : null}
+            {reviewTarget && reviewAvail ? (
+              <Typography variant="body2" color="text.secondary">
+                批号 {reviewTarget.lotNo} · 在库 {reviewTarget.qty} {reviewTarget.unit} · 待确认占用{' '}
+                {reviewAvail.heldQty} {reviewTarget.unit} · 可用 {reviewAvail.availableQty} {reviewTarget.unit}
+                {role !== 'reviewer' ? ' · 当前身份为技师，确认领用需复核权限（越权确认将被拒绝）' : ''}
+              </Typography>
+            ) : null}
+            {reviewAvail && reviewAvail.views.length === 0 ? (
+              <Typography variant="body2" color="text.secondary">
+                暂无待确认的用量申请。技师在工序中按批号提交后会在此排队。
+              </Typography>
+            ) : (
+              <Table size="small">
+                <TableHead>
+                  <TableRow>
+                    <TableCell>状态 / 等待名次</TableCell>
+                    <TableCell align="right">申请量</TableCell>
+                    <TableCell>用于标本</TableCell>
+                    <TableCell>申请人</TableCell>
+                    <TableCell>提交时间</TableCell>
+                    <TableCell align="right">操作</TableCell>
+                  </TableRow>
+                </TableHead>
+                <TableBody>
+                  {reviewAvail?.views.map((v) => (
+                    <TableRow key={v.request.id} hover>
+                      <TableCell>
+                        {v.occupy ? (
+                          <Chip size="small" color="warning" variant="outlined" label={`待确认占用 · 顺位 ${v.queuePos}`} />
+                        ) : (
+                          <Chip size="small" color="info" variant="outlined" label={`排队中 · 等待名次 ${v.queuePos}`} />
+                        )}
+                      </TableCell>
+                      <TableCell align="right">
+                        {v.request.qty} {v.request.unit}
+                      </TableCell>
+                      <TableCell>{v.request.specimenNo}</TableCell>
+                      <TableCell>{v.request.requestedBy}</TableCell>
+                      <TableCell>{new Date(v.request.submittedAt).toLocaleString('zh-CN')}</TableCell>
+                      <TableCell align="right">
+                        <Button
+                          size="small"
+                          color="success"
+                          disabled={!v.occupy}
+                          onClick={() => doConfirm(v.request.id)}
+                        >
+                          确认领用
+                        </Button>
+                        <Button size="small" color="error" onClick={() => doReject(v.request.id)}>
+                          拒绝
+                        </Button>
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            )}
+            {reviewTarget
+              ? requests
+                  .filter((r) => r.lotId === reviewTarget.id && r.status !== 'pending')
+                  .slice(0, 5)
+                  .map((r) => (
+                    <Typography key={r.id} variant="caption" color="text.secondary">
+                      {r.status === 'confirmed'
+                        ? `已确认：${r.requestedBy} 领 ${r.qty} ${r.unit} → ${r.specimenNo}`
+                        : r.status === 'rejected'
+                          ? `已拒绝：${r.requestedBy} ${r.qty} ${r.unit} → ${r.specimenNo}（${r.rejectReason ?? '复核拒绝'}）`
+                          : `已释放：${r.requestedBy} ${r.qty} ${r.unit} → ${r.specimenNo}（工序回退/移除）`}
+                    </Typography>
+                  ))
+              : null}
+          </Stack>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setReviewTarget(null)}>关闭</Button>
         </DialogActions>
       </Dialog>
 

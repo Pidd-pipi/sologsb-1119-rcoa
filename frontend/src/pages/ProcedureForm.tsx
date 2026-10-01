@@ -14,10 +14,13 @@ import FormControlLabel from '@mui/material/FormControlLabel';
 import Checkbox from '@mui/material/Checkbox';
 import { useSpecimenStore } from '../stores/specimenStore';
 import { useProcedureStore } from '../stores/procedureStore';
+import { useSupplyStore } from '../stores/supplyStore';
 import { usePrepProgress } from '../hooks/usePrepProgress';
 import { ProcedureTimeline } from '../components/common/ProcedureTimeline';
 import { MeasureField } from '../components/common/MeasureField';
 import { STEP_FIELD_MAP, STEP_TYPES, type StepType } from '../types/procedure';
+import { isLowStock, type SupplyLot } from '../types/supply';
+import { deriveLotAvailability } from '../utils/supplyRequests';
 import { db } from '../utils/db';
 import { newId } from '../utils/id';
 import { makeSketchDataUrl, type PrepPhoto } from '../types/photo';
@@ -30,6 +33,9 @@ export default function ProcedureForm() {
   const addProcedure = useProcedureStore((s) => s.add);
   const finish = useProcedureStore((s) => s.finish);
   const rollback = useProcedureStore((s) => s.rollback);
+  const supplyLots = useSupplyStore((s) => s.items);
+  const supplyRequests = useSupplyStore((s) => s.requests);
+  const submitRequest = useSupplyStore((s) => s.submitRequest);
 
   const [specimenId, setSpecimenId] = useState(params.get('specimenId') ?? specimens[0]?.id ?? '');
   const [stepType, setStepType] = useState<StepType>('清修');
@@ -39,6 +45,8 @@ export default function ProcedureForm() {
   const [abrasive, setAbrasive] = useState('');
   const [adhesive, setAdhesive] = useState('');
   const [adhesiveConc, setAdhesiveConc] = useState(5);
+  const [requestLotId, setRequestLotId] = useState('');
+  const [requestQty, setRequestQty] = useState(1);
   const [durationMin, setDurationMin] = useState(60);
   const [tempC, setTempC] = useState(22);
   const [rh, setRh] = useState(50);
@@ -52,6 +60,18 @@ export default function ProcedureForm() {
   const nextSeq = progress.list.length === 0 ? 1 : Math.max(...progress.list.map((it) => it.seq)) + 1;
 
   const specimen = useMemo(() => specimens.find((it) => it.id === specimenId), [specimens, specimenId]);
+
+  /** 当前胶种可选批次（同名受控胶种），附可用量 / 待确认量 */
+  const adhesiveLots = useMemo<SupplyLot[]>(() => {
+    if (!adhesive) return [];
+    return supplyLots.filter((l) => l.kind === '胶种' && l.name === adhesive);
+  }, [supplyLots, adhesive]);
+
+  const selectedLot = useMemo(
+    () => adhesiveLots.find((l) => l.id === requestLotId) ?? supplyLots.find((l) => l.id === requestLotId),
+    [adhesiveLots, supplyLots, requestLotId],
+  );
+  const selectedAvail = selectedLot ? deriveLotAvailability(selectedLot, supplyRequests) : undefined;
 
   const submit = async () => {
     if (!specimenId) {
@@ -79,6 +99,13 @@ export default function ProcedureForm() {
       setError('胶液浓度需在 0 ~ 100 % 之间');
       return;
     }
+    const adhesiveChosen = fieldMap.adhesives.length > 0 ? adhesive : '';
+    if (adhesiveChosen && requestLotId) {
+      if (!Number.isFinite(requestQty) || requestQty <= 0) {
+        setError('胶种用量必须大于 0');
+        return;
+      }
+    }
 
     const record = await addProcedure({
       specimenId,
@@ -87,7 +114,7 @@ export default function ProcedureForm() {
       seq,
       tools,
       abrasive,
-      adhesive: fieldMap.adhesives.length > 0 ? adhesive : '',
+      adhesive: adhesiveChosen,
       adhesiveConc: fieldMap.needConc ? adhesiveConc : 0,
       durationMin,
       tempC,
@@ -98,6 +125,31 @@ export default function ProcedureForm() {
       startedAt: Date.now(),
       state: 'pending',
     });
+
+    // 受控胶种：按批号提交用量申请，形成待确认占用（库存不立即扣）
+    let queueNote = '';
+    if (adhesiveChosen && requestLotId && specimen) {
+      try {
+        await submitRequest({
+          lotId: requestLotId,
+          procedureId: record.id,
+          specimenId,
+          specimenNo: specimen.specimenNo,
+          qty: requestQty,
+          requestedBy: operator.trim(),
+        });
+        const lot = supplyLots.find((l) => l.id === requestLotId);
+        if (lot) {
+          const avail = deriveLotAvailability(lot, useSupplyStore.getState().requests);
+          const view = avail.views.find((v) => v.request.procedureId === record.id);
+          queueNote = view?.occupy
+            ? `；已形成待确认占用（可用 ${avail.availableQty} ${lot.unit}）`
+            : `；批次容量不足，已排队，等待名次 ${view?.queuePos ?? '-'}`;
+        }
+      } catch (e) {
+        setError(`用量申请失败：${(e as Error).message}`);
+      }
+    }
 
     if (withPhotos && specimen) {
       const before: PrepPhoto = {
@@ -122,9 +174,12 @@ export default function ProcedureForm() {
     }
 
     setError('');
-    setToast(`已追加工序节点 #${seq} ${stepType} · ${record.nodeName}`);
+    setToast(`已追加工序节点 #${seq} ${stepType} · ${record.nodeName}${queueNote}`);
     setNodeName('');
     setTools([]);
+    setAdhesive('');
+    setRequestLotId('');
+    setRequestQty(1);
     setSeq(nextSeq + 1);
   };
 
@@ -176,6 +231,7 @@ export default function ProcedureForm() {
                   setTools([]);
                   setAbrasive('');
                   setAdhesive('');
+                  setRequestLotId('');
                 }}
               >
                 {STEP_TYPES.map((t) => (
@@ -254,7 +310,10 @@ export default function ProcedureForm() {
                   fullWidth
                   label="胶种"
                   value={adhesive}
-                  onChange={(e) => setAdhesive(e.target.value)}
+                  onChange={(e) => {
+                    setAdhesive(e.target.value);
+                    setRequestLotId('');
+                  }}
                 >
                   <MenuItem value="">未选定</MenuItem>
                   {fieldMap.adhesives.map((a) => (
@@ -273,6 +332,54 @@ export default function ProcedureForm() {
                       step={0.5}
                       value={adhesiveConc}
                       onChange={setAdhesiveConc}
+                    />
+                  </Box>
+                ) : null}
+              </Stack>
+            ) : null}
+
+            {fieldMap.adhesives.length > 0 && adhesive ? (
+              <Stack direction="row" spacing={1.5} alignItems="flex-start">
+                <TextField
+                  select
+                  size="small"
+                  fullWidth
+                  label="受控胶种批号（按批号提交用量申请）"
+                  value={requestLotId}
+                  onChange={(e) => setRequestLotId(e.target.value)}
+                  helperText={
+                    selectedLot && selectedAvail
+                      ? `可用 ${selectedAvail.availableQty} ${selectedLot.unit} · 待确认 ${selectedAvail.heldQty} ${selectedLot.unit}${
+                          isLowStock(selectedLot) ? ' · 该批次低量' : ''
+                        }`
+                      : '选择批次后按先提交先占用规则排队，库存不立即扣减'
+                  }
+                >
+                  <MenuItem value="">不领用胶种</MenuItem>
+                  {adhesiveLots.map((l) => {
+                    const avail = deriveLotAvailability(l, supplyRequests);
+                    return (
+                      <MenuItem key={l.id} value={l.id}>
+                        批号 {l.lotNo} · 可用 {avail.availableQty} {l.unit}（待确认 {avail.heldQty}）
+                      </MenuItem>
+                    );
+                  })}
+                </TextField>
+                {requestLotId ? (
+                  <Box sx={{ flex: 1 }}>
+                    <MeasureField
+                      label="申请用量"
+                      unit={selectedLot?.unit ?? ''}
+                      min={1}
+                      max={100000}
+                      step={1}
+                      value={requestQty}
+                      onChange={setRequestQty}
+                      hint={
+                        selectedAvail && requestQty > selectedAvail.availableQty
+                          ? `超出可用量，提交后排队（等待名次 ${selectedAvail.activeCount + 1}）`
+                          : '提交后形成待确认占用，复核确认才扣库存'
+                      }
                     />
                   </Box>
                 ) : null}

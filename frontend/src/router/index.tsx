@@ -10,9 +10,12 @@ import Box from '@mui/material/Box';
 import Stack from '@mui/material/Stack';
 import CircularProgress from '@mui/material/CircularProgress';
 import Chip from '@mui/material/Chip';
+import TextField from '@mui/material/TextField';
+import MenuItem from '@mui/material/MenuItem';
 import { useSpecimenStore } from '../stores/specimenStore';
 import { useProcedureStore } from '../stores/procedureStore';
 import { useSupplyStore } from '../stores/supplyStore';
+import { useRoleStore, ROLE_LABEL, type Role } from '../stores/roleStore';
 import { ensureSeedData, markDbVersion, readDbVersion } from '../utils/db';
 import SpecimenList from '../pages/SpecimenList';
 import SpecimenDetail from '../pages/SpecimenDetail';
@@ -24,6 +27,8 @@ function Shell() {
   const location = useLocation();
   const navigate = useNavigate();
   const specimens = useSpecimenStore((s) => s.items);
+  const role = useRoleStore((s) => s.role);
+  const setRole = useRoleStore((s) => s.setRole);
   const version = readDbVersion();
 
   const navItems = useMemo(() => {
@@ -56,6 +61,17 @@ function Shell() {
             ))}
           </Tabs>
           <Box sx={{ flex: 1 }} />
+          <TextField
+            select
+            size="small"
+            label="当前身份"
+            value={role}
+            onChange={(e) => setRole(e.target.value as Role)}
+            sx={{ minWidth: 120 }}
+          >
+            <MenuItem value="technician">{ROLE_LABEL.technician}</MenuItem>
+            <MenuItem value="reviewer">{ROLE_LABEL.reviewer}</MenuItem>
+          </TextField>
           <Chip size="small" variant="outlined" label={`本地结构版本 v${version}`} />
         </Toolbar>
       </AppBar>

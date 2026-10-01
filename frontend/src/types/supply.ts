@@ -25,13 +25,46 @@ export interface SupplyLot {
   issues: SupplyIssue[];
 }
 
-/** 领用登记 */
+/** 领用登记（正式领用，库存已扣减） */
 export interface SupplyIssue {
   id: string;
   qty: number;
   operator: string;
   specimenNo: string;
   issuedAt: number;
+}
+
+/** 受控胶种用量申请状态 */
+export type SupplyRequestStatus =
+  | 'pending' // 待确认占用：已占用额度，库存未扣减
+  | 'confirmed' // 已确认：转为正式领用，库存已扣减
+  | 'rejected' // 已拒绝（含越权确认被拒）
+  | 'released'; // 已释放（工序回退/移除时释放占用）
+
+/**
+ * 受控胶种用量申请。
+ * 技师在工序中按批号提交，先生成「待确认占用」，库存不立即扣；
+ * 有复核权限的人确认后才转为正式领用（SupplyIssue）。
+ */
+export interface SupplyRequest {
+  id: string;
+  lotId: string;
+  procedureId: string;
+  specimenId: string;
+  specimenNo: string;
+  /** 申请用量 */
+  qty: number;
+  unit: string;
+  status: SupplyRequestStatus;
+  requestedBy: string;
+  /** 提交时间，决定排队先后顺序（FIFO） */
+  submittedAt: number;
+  confirmedAt?: number;
+  confirmedBy?: string;
+  /** 确认后生成的正式领用记录 id */
+  issueId?: string;
+  rejectReason?: string;
+  releasedAt?: number;
 }
 
 export type SupplyLotDraft = Omit<SupplyLot, 'id' | 'issues'>;
